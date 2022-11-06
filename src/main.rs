@@ -1,3 +1,4 @@
+use crate::data_gather::{DataGather, Record};
 use crate::exercise::{Exercise, ExerciseList};
 use crate::project::RustAnalyzerProject;
 use crate::run::{reset, run};
@@ -17,10 +18,12 @@ use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use strip_ansi_escapes;
 
 #[macro_use]
 mod ui;
 
+mod data_gather;
 mod exercise;
 mod project;
 mod run;
@@ -28,6 +31,7 @@ mod verify;
 
 // In sync with crate version
 const VERSION: &str = "5.2.1";
+const DATA_PATH: &str = "data.json";
 
 #[derive(FromArgs, PartialEq, Debug)]
 /// Rustlings is a collection of small exercises to get you used to writing and reading Rust code
@@ -127,17 +131,17 @@ struct ListArgs {
 pub struct ExerciseCheckList {
     pub exercises: Vec<ExerciseResult>,
     pub user_name: Option<String>,
-    pub statistics: ExerciseStatistics
+    pub statistics: ExerciseStatistics,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct ExerciseResult {
     pub name: String,
-    pub result: bool
+    pub result: bool,
 }
 
 #[derive(Deserialize, Serialize)]
-pub struct  ExerciseStatistics {
+pub struct ExerciseStatistics {
     pub total_exercations: usize,
     pub total_succeeds: usize,
     pub total_failures: usize,
@@ -257,28 +261,35 @@ async fn main() {
         }
 
         Subcommands::Verify(_subargs) => {
-            verify(&exercises, (0, exercises.len()), verbose)
-                .unwrap_or_else(|_| std::process::exit(1));
+            let num_exercise = exercises.len();
+            for exercise in exercises {
+                match verify(&exercise, (0, num_exercise), verbose) {
+                    Err(_) => std::process::exit(1),
+                    Ok(_) => {}
+                }
+            }
+            // success
         }
 
         Subcommands::MyVerify(_subargs) => {
             let toml_str = &fs::read_to_string("check.toml").unwrap();
             exercises = toml::from_str::<ExerciseList>(toml_str).unwrap().exercises;
-            let now_start = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            let now_start = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
             let rights = Arc::new(Mutex::new(0));
             let alls = exercises.len();
 
-            let exercise_check_list =  Arc::new(Mutex::new(
-                ExerciseCheckList {
-                    exercises: vec![], 
-                    user_name:  None, 
-                    statistics: ExerciseStatistics { 
-                        total_exercations: alls, 
-                        total_succeeds: 0, 
-                        total_failures: 0,  
-                    }
-                }
-            ));
+            let exercise_check_list = Arc::new(Mutex::new(ExerciseCheckList {
+                exercises: vec![],
+                user_name: None,
+                statistics: ExerciseStatistics {
+                    total_exercations: alls,
+                    total_succeeds: 0,
+                    total_failures: 0,
+                },
+            }));
 
             let mut tasks = vec![];
             for exercise in exercises {
@@ -286,39 +297,62 @@ async fn main() {
                 let c_mutex = Arc::clone(&rights);
                 let exercise_check_list_ref = Arc::clone(&exercise_check_list);
                 let _verbose = verbose.clone();
-                let t = tokio::task::spawn( async move {
+                let t = tokio::task::spawn(async move {
                     match run(&inner_exercise, true) {
                         Ok(_) => {
                             *c_mutex.lock().unwrap() += 1;
                             println!("{}执行成功", inner_exercise.name);
                             println!("总的题目数: {}", alls);
                             println!("当前做正确的题目数: {}", *c_mutex.lock().unwrap());
-                            let now_end = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                            let now_end = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs();
                             println!("当前修改试卷总耗时: {} s", now_end - now_start);
-                            exercise_check_list_ref.lock().unwrap().exercises.push(ExerciseResult{ 
-                                name: inner_exercise.name, result: true,
-                            });
-                            exercise_check_list_ref.lock().unwrap().statistics.total_succeeds += 1;
-                        },
+                            exercise_check_list_ref.lock().unwrap().exercises.push(
+                                ExerciseResult {
+                                    name: inner_exercise.name,
+                                    result: true,
+                                },
+                            );
+                            exercise_check_list_ref
+                                .lock()
+                                .unwrap()
+                                .statistics
+                                .total_succeeds += 1;
+                        }
                         Err(_) => {
                             println!("{}执行失败", inner_exercise.name);
                             println!("总的题目数: {}", alls);
                             println!("当前做正确的题目数: {}", *c_mutex.lock().unwrap());
-                            let now_end = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                            let now_end = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs();
                             println!("当前修改试卷耗时: {} s", now_end - now_start);
-                            exercise_check_list_ref.lock().unwrap().exercises.push(ExerciseResult{ 
-                                name: inner_exercise.name, result: false,
-                            });
-                            exercise_check_list_ref.lock().unwrap().statistics.total_failures += 1;
+                            exercise_check_list_ref.lock().unwrap().exercises.push(
+                                ExerciseResult {
+                                    name: inner_exercise.name,
+                                    result: false,
+                                },
+                            );
+                            exercise_check_list_ref
+                                .lock()
+                                .unwrap()
+                                .statistics
+                                .total_failures += 1;
                         }
                     }
                 });
                 tasks.push(t);
             }
-            for task in tasks { task.await.unwrap(); }
-            let serialized = serde_json::to_string_pretty(&*exercise_check_list.lock().unwrap()).unwrap();
+            for task in tasks {
+                task.await.unwrap();
+            }
+            let serialized =
+                serde_json::to_string_pretty(&*exercise_check_list.lock().unwrap()).unwrap();
             fs::write(".github/result/check_result.json", serialized).unwrap();
-        },
+        }
 
         Subcommands::Lsp(_subargs) => {
             let mut project = RustAnalyzerProject::new();
@@ -428,6 +462,9 @@ enum WatchStatus {
 }
 
 fn watch(exercises: &[Exercise], verbose: bool) -> notify::Result<WatchStatus> {
+    let data_gather = DataGather::new(Path::new(DATA_PATH).to_path_buf());
+    let mut record = Record::empty();
+
     /* Clears the terminal with an ANSI escape code.
     Works in UNIX and newer Windows terminals. */
     fn clear_screen() {
@@ -443,10 +480,40 @@ fn watch(exercises: &[Exercise], verbose: bool) -> notify::Result<WatchStatus> {
     clear_screen();
 
     let to_owned_hint = |t: &Exercise| t.hint.to_owned();
-    let failed_exercise_hint = match verify(exercises.iter(), (0, exercises.len()), verbose) {
-        Ok(_) => return Ok(WatchStatus::Finished),
-        Err(exercise) => Arc::new(Mutex::new(Some(to_owned_hint(exercise)))),
-    };
+    let mut failed_exercise_hint = Arc::new(Mutex::default());
+    let mut num_done = 0;
+    for exercise in exercises.iter() {
+        record.reset_path(&exercise.path);
+
+        match verify(exercise, (0, exercises.len()), verbose) {
+            Ok(_) => {
+                num_done += 1;
+                if record.check_file(&exercise.path) {
+                    record.read_right_code();
+                    data_gather.push(record.clone());
+                }
+                record.clear();
+            }
+            Err(exercise_failed) => {
+                record.set_error(
+                    &std::str::from_utf8(
+                        &strip_ansi_escapes::strip(&exercise_failed.reason.msg).unwrap(),
+                    )
+                    .unwrap()
+                    .to_string(),
+                );
+                failed_exercise_hint =
+                    Arc::new(Mutex::new(Some(to_owned_hint(exercise_failed.exercise))));
+                break;
+            }
+        };
+    }
+
+    if num_done == exercises.len() {
+        // When all the exercises are done, we will reach here.
+        return Ok(WatchStatus::Finished);
+    }
+
     spawn_watch_shell(&failed_exercise_hint, Arc::clone(&should_quit));
     loop {
         match rx.recv_timeout(Duration::from_secs(1)) {
@@ -465,11 +532,39 @@ fn watch(exercises: &[Exercise], verbose: bool) -> notify::Result<WatchStatus> {
                             );
                         let num_done = exercises.iter().filter(|e| e.looks_done()).count();
                         clear_screen();
-                        match verify(pending_exercises, (num_done, exercises.len()), verbose) {
-                            Ok(_) => return Ok(WatchStatus::Finished),
-                            Err(exercise) => {
-                                let mut failed_exercise_hint = failed_exercise_hint.lock().unwrap();
-                                *failed_exercise_hint = Some(to_owned_hint(exercise));
+
+                        if num_done == exercises.len() {
+                            // Success when all exercise are done.
+                            return Ok(WatchStatus::Finished);
+                        }
+
+                        for exercise in pending_exercises {
+                            record.reset_path(&exercise.path);
+                            match verify(exercise, (num_done, exercises.len()), verbose) {
+                                Ok(_) => {
+                                    // record data
+                                    if record.check_file(&exercise.path) {
+                                        record.read_right_code();
+                                        data_gather.push(record.clone());
+                                    }
+                                    record.clear();
+                                }
+                                Err(exercise_failed) => {
+                                    let mut failed_exercise_hint =
+                                        failed_exercise_hint.lock().unwrap();
+                                    *failed_exercise_hint =
+                                        Some(to_owned_hint(exercise_failed.exercise));
+                                    // record failure msg
+                                    record.set_error(
+                                        &std::str::from_utf8(
+                                            &strip_ansi_escapes::strip(&exercise_failed.reason.msg)
+                                                .unwrap(),
+                                        )
+                                        .unwrap()
+                                        .to_string(),
+                                    );
+                                    break;
+                                }
                             }
                         }
                     }

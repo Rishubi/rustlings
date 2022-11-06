@@ -1,14 +1,14 @@
 use std::process::Command;
 
 use crate::exercise::{Exercise, Mode};
-use crate::verify::test;
+use crate::verify::{test, FailedType, VerifyFailed};
 use indicatif::ProgressBar;
 
 // Invoke the rust compiler on the path of the given exercise,
 // and run the ensuing binary.
 // The verbose argument helps determine whether or not to show
 // the output from the test harnesses (if the mode of the exercise is test)
-pub fn run(exercise: &Exercise, verbose: bool) -> Result<(), ()> {
+pub fn run(exercise: &Exercise, verbose: bool) -> Result<(), VerifyFailed> {
     match exercise.mode {
         Mode::Test => test(exercise, verbose)?,
         Mode::Compile => compile_and_run(exercise)?,
@@ -33,7 +33,7 @@ pub fn reset(exercise: &Exercise) -> Result<(), ()> {
 // Invoke the rust compiler on the path of the given exercise
 // and run the ensuing binary.
 // This is strictly for non-test binaries, so output is displayed
-fn compile_and_run(exercise: &Exercise) -> Result<(), ()> {
+fn compile_and_run(exercise: &Exercise) -> Result<(), VerifyFailed> {
     let progress_bar = ProgressBar::new_spinner();
     progress_bar.set_message(format!("Compiling {exercise}..."));
     progress_bar.enable_steady_tick(100);
@@ -48,7 +48,10 @@ fn compile_and_run(exercise: &Exercise) -> Result<(), ()> {
                 exercise
             );
             println!("{}", output.stderr);
-            return Err(());
+            return Err(VerifyFailed {
+                failed_type: FailedType::Compilation,
+                msg: String::from(output.stderr),
+            });
         }
     };
 
@@ -67,7 +70,14 @@ fn compile_and_run(exercise: &Exercise) -> Result<(), ()> {
             println!("{}", output.stderr);
 
             warn!("Ran {} with errors", exercise);
-            Err(())
+            Err(VerifyFailed {
+                failed_type: FailedType::Running,
+                msg: String::from(
+                    format_args!("{} \n {}", output.stdout, output.stderr)
+                        .as_str()
+                        .unwrap(),
+                ),
+            })
         }
     }
 }

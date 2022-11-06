@@ -3,36 +3,77 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::env;
 
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum FailedType {
+    Compilation,
+    Testing,
+    Running,
+    Clippy,
+    Unknown,
+}
+
+#[derive(Debug)]
+pub struct VerifyFailed {
+    pub failed_type: FailedType,
+    pub msg: String,
+}
+
+pub struct ExerciseFailed<'a> {
+    pub exercise: &'a Exercise,
+    pub reason: VerifyFailed,
+}
+
 // Verify that the provided container of Exercise objects
 // can be compiled and run without any failures.
 // Any such failures will be reported to the end user.
 // If the Exercise being verified is a test, the verbose boolean
 // determines whether or not the test harness outputs are displayed.
 pub fn verify<'a>(
-    exercises: impl IntoIterator<Item = &'a Exercise>,
+    exercise: &'a Exercise,
     progress: (usize, usize),
     verbose: bool,
-) -> Result<(), &'a Exercise> {
+) -> Result<(), ExerciseFailed<'a>> {
     let (num_done, total) = progress;
     let bar = ProgressBar::new(total as u64);
-    bar.set_style(ProgressStyle::default_bar()
-        .template("Progress: [{bar:60.green/red}] {pos}/{len} {msg}")
-        .progress_chars("#>-")
+    bar.set_style(
+        ProgressStyle::default_bar()
+            .template("Progress: [{bar:60.green/red}] {pos}/{len} {msg}")
+            .progress_chars("#>-"),
     );
     bar.set_position(num_done as u64);
-    for exercise in exercises {
-        let compile_result = match exercise.mode {
-            Mode::Test => compile_and_test(exercise, RunMode::Interactive, verbose),
-            Mode::Compile => compile_and_run_interactively(exercise),
-            Mode::Clippy => compile_only(exercise),
-        };
-        if !compile_result.unwrap_or(false) {
-            return Err(exercise);
+
+    let compile_result = match exercise.mode {
+        Mode::Test => compile_and_test(exercise, RunMode::Interactive, verbose),
+        Mode::Compile => compile_and_run_interactively(exercise),
+        Mode::Clippy => compile_only(exercise),
+    };
+
+    match compile_result {
+        Err(e) => {
+            return Err(ExerciseFailed {
+                exercise,
+                reason: e,
+            });
         }
-        let percentage = num_done as f32 / total as f32 * 100.0;
-        bar.set_message(format!("({:.1} %)", percentage));
-        bar.inc(1);
+        Ok(false) => {
+            return Err(ExerciseFailed {
+                exercise,
+                reason: VerifyFailed {
+                    failed_type: FailedType::Unknown,
+                    msg: String::from(""),
+                },
+            });
+        }
+        _ => {}
     }
+
+    // if !compile_result.unwrap_or(false) {
+    //     return Err(exercise);
+    // }
+    let percentage = num_done as f32 / total as f32 * 100.0;
+    bar.set_message(format!("({:.1} %)", percentage));
+    bar.inc(1);
     Ok(())
 }
 
@@ -42,13 +83,13 @@ enum RunMode {
 }
 
 // Compile and run the resulting test harness of the given Exercise
-pub fn test(exercise: &Exercise, verbose: bool) -> Result<(), ()> {
+pub fn test(exercise: &Exercise, verbose: bool) -> Result<(), VerifyFailed> {
     compile_and_test(exercise, RunMode::NonInteractive, verbose)?;
     Ok(())
 }
 
 // Invoke the rust compiler without running the resulting binary
-fn compile_only(exercise: &Exercise) -> Result<bool, ()> {
+fn compile_only(exercise: &Exercise) -> Result<bool, VerifyFailed> {
     let progress_bar = ProgressBar::new_spinner();
     progress_bar.set_message(format!("Compiling {exercise}..."));
     progress_bar.enable_steady_tick(100);
@@ -60,7 +101,7 @@ fn compile_only(exercise: &Exercise) -> Result<bool, ()> {
 }
 
 // Compile the given Exercise and run the resulting binary in an interactive mode
-fn compile_and_run_interactively(exercise: &Exercise) -> Result<bool, ()> {
+fn compile_and_run_interactively(exercise: &Exercise) -> Result<bool, VerifyFailed> {
     let progress_bar = ProgressBar::new_spinner();
     progress_bar.set_message(format!("Compiling {exercise}..."));
     progress_bar.enable_steady_tick(100);
@@ -77,7 +118,14 @@ fn compile_and_run_interactively(exercise: &Exercise) -> Result<bool, ()> {
             warn!("Ran {} with errors", exercise);
             println!("{}", output.stdout);
             println!("{}", output.stderr);
-            return Err(());
+            return Err(VerifyFailed {
+                failed_type: FailedType::Running,
+                msg: String::from(
+                    format_args!("{} \n {}", output.stdout, output.stderr)
+                        .as_str()
+                        .unwrap(),
+                ),
+            });
         }
     };
 
@@ -86,7 +134,11 @@ fn compile_and_run_interactively(exercise: &Exercise) -> Result<bool, ()> {
 
 // Compile the given Exercise as a test harness and display
 // the output if verbose is set to true
-fn compile_and_test(exercise: &Exercise, run_mode: RunMode, verbose: bool) -> Result<bool, ()> {
+fn compile_and_test(
+    exercise: &Exercise,
+    run_mode: RunMode,
+    verbose: bool,
+) -> Result<bool, VerifyFailed> {
     let progress_bar = ProgressBar::new_spinner();
     progress_bar.set_message(format!("Testing {exercise}..."));
     progress_bar.enable_steady_tick(100);
@@ -112,7 +164,10 @@ fn compile_and_test(exercise: &Exercise, run_mode: RunMode, verbose: bool) -> Re
                 exercise
             );
             println!("{}", output.stdout);
-            Err(())
+            Err(VerifyFailed {
+                failed_type: FailedType::Testing,
+                msg: output.stderr,
+            })
         }
     }
 }
@@ -122,7 +177,7 @@ fn compile_and_test(exercise: &Exercise, run_mode: RunMode, verbose: bool) -> Re
 fn compile<'a, 'b>(
     exercise: &'a Exercise,
     progress_bar: &'b ProgressBar,
-) -> Result<CompiledExercise<'a>, ()> {
+) -> Result<CompiledExercise<'a>, VerifyFailed> {
     let compilation_result = exercise.compile();
 
     match compilation_result {
@@ -134,7 +189,10 @@ fn compile<'a, 'b>(
                 exercise
             );
             println!("{}", output.stderr);
-            Err(())
+            Err(VerifyFailed {
+                failed_type: FailedType::Compilation,
+                msg: String::from(output.stderr),
+            })
         }
     }
 }
