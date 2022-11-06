@@ -24,26 +24,28 @@ impl Record {
         assert_eq!(self.errors.len(), self.wrong_codes.len());
         assert!(!self.right_code.is_empty());
         let mut out = String::new();
-        let num = self.errors.len();
+        // let num = self.errors.len();
 
         let it = self.wrong_codes.iter().zip(self.errors.iter());
         // let v: Vec<(&String, &String)> = it.collect();
         // return Some(format_args!("{:?}", v).to_string().to_owned());
-        for (i, (wrong_code, error)) in it.enumerate() {
+        for (wrong_code, error) in it {
             if error.is_empty() {
                 continue;
             }
             out.push_str(
                 format!(
-                    "{{\"wrong_code\": \"{}\", \"error\": \"{}\", \"right_code\": \"{}\"}}",
-                    wrong_code, error, self.right_code
+                    "{{\"wrong_code\": \"{}\", \"error\": \"{}\", \"right_code\": \"{}\"}}\n",
+                    wrong_code.replace("\n", "\\n").replace("\t", "\\n").replace("\"", "\\\""),
+                    error.replace("\n", "\\n").replace("\t", "\\n").replace("\"", "\\\""),
+                    self.right_code.replace("\n", "\\n").replace("\t", "\\n").replace("\"", "\\\"")
                 )
                 .as_str(),
             );
 
-            if i < num - 1 {
-                out.push_str(",\n");
-            }
+            // if i < num - 1 {
+            //     out.push_str(",\n");
+            // }
         }
 
         if out.is_empty() {
@@ -114,7 +116,7 @@ impl DataGather {
         if !record.is_empty() {
             if let Some(data) = record.to_json() {
                 file.write(data.as_bytes()).unwrap();
-                file.write(b",\n").unwrap();
+                file.write(b"\n").unwrap();
             }
         }
     }

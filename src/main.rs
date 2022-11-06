@@ -31,7 +31,7 @@ mod verify;
 
 // In sync with crate version
 const VERSION: &str = "5.2.1";
-const DATA_PATH: &str = "data.json";
+const DATA_PATH: &str = "data.jsonl";
 
 #[derive(FromArgs, PartialEq, Debug)]
 /// Rustlings is a collection of small exercises to get you used to writing and reading Rust code
@@ -220,12 +220,12 @@ async fn main() {
                     // Somehow using println! leads to the binary panicking
                     // when its output is piped.
                     // So, we're handling a Broken Pipe error and exiting with 0 anyway
-                    let stdout = std::io::stdout();
+                    let stdout = io::stdout();
                     {
                         let mut handle = stdout.lock();
                         handle.write_all(line.as_bytes()).unwrap_or_else(|e| {
                             match e.kind() {
-                                std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+                                io::ErrorKind::BrokenPipe => std::process::exit(0),
                                 _ => std::process::exit(1),
                             };
                         });
