@@ -106,6 +106,7 @@ impl DataGather {
 
     pub fn push(&self, record: Record) {
         let mut file = fs::OpenOptions::new()
+            .create(true)
             .append(true)
             .write(true)
             .open(&self.dump_path)
