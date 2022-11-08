@@ -485,7 +485,7 @@ fn watch(exercises: &[Exercise], verbose: bool) -> notify::Result<WatchStatus> {
     for exercise in exercises.iter() {
         record.reset_path(&exercise.path);
 
-        match verify(exercise, (0, exercises.len()), verbose) {
+        match verify(exercise, (num_done, exercises.len()), verbose) {
             Ok(_) => {
                 num_done += 1;
                 if record.check_file(&exercise.path) {
